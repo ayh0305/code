@@ -1,0 +1,117 @@
+Postgres CDC
+
+WITH tmp AS(
+SELECT relname,
+	format_type ( A.atttypid, A.atttypmod )AS pgtype,
+	b.typname,
+	( CASE WHEN atttypid = 1043 THEN A.atttypmod - 4 ELSE A.atttypmod END ) attlong,
+	A.attname AS NAME 
+FROM
+	pg_class AS C,pg_type b,pg_attribute AS A 
+WHERE
+	 A.attrelid = C.oid AND A.atttypid = b.oid AND A.attnum > 0
+	AND C.relname = 'ods_api_vacc_personinfo' --表名
+),tmp1 AS(
+SELECT 
+NAME||'  '||
+(CASE 
+WHEN typname='int2' OR typname='smallserial' OR typname='serial2' THEN 'smallint'
+WHEN typname='integer' OR typname='serial' THEN 'INT'
+WHEN typname='bigserial' THEN 'bigint'
+WHEN typname='real' OR typname='float4' THEN 'float'
+WHEN typname='float8' OR typname='double precision' THEN 'DOUBLE'
+WHEN typname='char' OR typname='character' OR typname='varchar' OR typname='character varing' OR typname='text'  THEN 'string'
+WHEN typname='bytea' THEN 'bytes'
+WHEN typname='numeric' THEN 'decimal'
+ELSE typname END)||',' AS flinktype
+FROM tmp 
+),tmp2 AS(
+SELECT  'PRIMARY KEY ('||string_agg(a.attname, ',')||') NOT ENFORCED' as pk
+FROM   pg_index i 
+JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) 
+WHERE  i.indrelid = (SELECT relname FROM tmp LIMIT 1)::regclass AND i.indisprimary
+)
+SELECT 
+'CREATE TABLE pgcdc_source_'||b.relname||' ('||chr(10)||
+(CASE WHEN e.pk is NOT NULL THEN a.flinktype||chr(10)||e.pk
+ELSE substring(a.flinktype,1,length(a.flinktype)-1) END)||
+
+' ) '||chr(10)||'WITH ('||chr(10)||
+'''connector''=''postgres-cdc'',  '||chr(10)||
+'''hostname''='''||SPLIT_PART(c.hostname::text, '/', 1)||''', '||chr(10)||
+'''port''='''||c.port||''', '||chr(10)||
+'''database-name''='''||c.database_name||''', '||chr(10)||
+'''schema-name''='''||d.schemaname||''', '||chr(10)||
+'''username''=''用户名'', '||chr(10)||
+'''password''=''密码'', '||chr(10)||
+'''table-name''='''||b.relname||''', '||chr(10)||
+'''decoding.plugin.name''=''复制槽插件名称'', '||chr(10)||
+'''debezium.snapshot.mode''=''initial'', '||chr(10)||
+'''debezium.slot.name''=''复制槽名称'', '||chr(10)||
+');'
+AS flinksql
+FROM tmp2 e,
+(SELECT string_agg(flinktype, chr(10)) AS flinktype FROM tmp1)a,(SELECT relname FROM tmp LIMIT 1) b ,
+(select inet_server_addr() AS hostname,inet_server_port() AS port ,current_database()AS database_name ) c,
+(select schemaname from pg_tables where tablename = (SELECT relname FROM tmp LIMIT 1))d
+;
+
+
+GRANT SELECT ON pg_class,pg_type,pg_attribute,pg_index,pg_tables TO user;
+
+
+MySQL CDC
+
+SELECT 
+(CASE WHEN c.PK IS NOT NULL THEN
+CONCAT('CREATE TABLE mysqlcdc_source_',a.TABLE_NAME,' (',CHAR(10),
+b.col,c.PK,CHAR(10),') WITH (',CHAR(10),'''connector'' = ''mysql-cdc'', ',CHAR(10),
+'''hostname'' = ''数据源ip地址'', ',CHAR(10),'''port'' = ''',@@port,''', ',CHAR(10),
+'''username'' = ''用户名'', ',CHAR(10),'''password'' = ''密码'', ',CHAR(10),
+'''database-name'' =  ''',a.TABLE_SCHEMA,''', ',CHAR(10),
+'''table-name'' =  ''',a.TABLE_NAME,'''); ',CHAR(10)
+) 
+ELSE 
+CONCAT('CREATE TABLE mysqlcdc_source_',a.TABLE_NAME,' (',CHAR(10),
+substring(b.col,1,LENGTH(b.col)-2),CHAR(10),') WITH (',CHAR(10),'''connector'' = ''mysql-cdc'', ',CHAR(10),
+'''hostname'' = ''数据源ip地址'', ',CHAR(10),'''port'' = ''',@@port,''', ',CHAR(10),
+'''username'' = ''用户名'', ',CHAR(10),'''password'' = ''密码'', ',CHAR(10),
+'''database-name'' =  ''',a.TABLE_SCHEMA,''', ',CHAR(10),
+'''table-name'' =  ''',a.TABLE_NAME,'''); ',CHAR(10)
+) 
+END)AS FlinkSql
+FROM
+(SELECT DISTINCT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS) a JOIN
+(
+SELECT TABLE_NAME,GROUP_CONCAT(CONCAT(COLUMN_NAME,'  ',
+(CASE WHEN upper(DATA_TYPE) IN ('TINYINT UNSIGNED','TINYINT UNSIGNED ZEROFILL') THEN 'smallint'
+WHEN upper(DATA_TYPE) IN ('MEDIUMINT','SMALLINT UNSIGNED','SMALLINT UNSIGNED ZEROFILL','YEAR') THEN 'int'
+WHEN upper(DATA_TYPE) IN ('INT UNSIGNED','INT UNSIGNED ZEROFILL','MEDIUMINT UNSIGNED','MEDIUMINT UNSIGNED ZEROFILL') THEN 'bigint'
+WHEN upper(DATA_TYPE) IN ('BIGINT UNSIGNED','BIGINT UNSIGNED ZEROFILL','SERIAL') THEN 'decimal(20, 0)'
+WHEN upper(DATA_TYPE) IN ('FLOAT UNSIGNED','FLOAT UNSIGNED ZEROFILL') THEN 'float'
+WHEN upper(DATA_TYPE) IN ('REAL','REAL UNSIGNED','REAL UNSIGNED ZEROFILL','DOUBLE UNSIGNED','DOUBLE UNSIGNED ZEROFILL','DOUBLE PRECISION','DOUBLE PRECISION UNSIGNED','DOUBLE PRECISION UNSIGNED','ZEROFILL') THEN 'double'
+WHEN DATA_TYPE LIKE 'numeric%' OR DATA_TYPE LIKE 'decimal%' OR DATA_TYPE LIKE 'fixed%'
+OR upper(DATA_TYPE) IN ('TINYTEXT','TEXT','MEDIUMTEXT','LONGTEXT','ENUM','JSON','GEOMETRY','POINT','LINESTRING','POLYGON','MULTIPOINT','MULTILINESTRING','MULTIPOLYGON','GEOMETRYCOLLECTION','VARCHAR')
+THEN 'string'
+WHEN upper(DATA_TYPE) IN ('BLOB','MEDIUMBLOB','LONGBLOB') THEN 'bytes'
+WHEN upper(DATA_TYPE) like 'BIT%' THEN CONCAT('BINARY(',CHARACTER_MAXIMUM_LENGTH/8,')')
+WHEN upper(DATA_TYPE) like 'datetime%' THEN 'timestamp'
+ELSE DATA_TYPE END) ,',',CHAR(10)
+)SEPARATOR '')AS col
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'api_vacc_personinfo'    -- 表名
+)b ON a.TABLE_NAME=b.TABLE_NAME , 
+(SELECT CONCAT('PRIMARY KEY(',GROUP_CONCAT(COLUMN_NAME),') NOT ENFORCED') AS PK 
+FROM INFORMATION_SCHEMA.COLUMNS WHERE COLUMN_KEY='PRI' AND TABLE_NAME = 'api_vacc_personinfo' -- 表名
+)c ;
+
+
+
+
+
+
+
+
+
+
+
