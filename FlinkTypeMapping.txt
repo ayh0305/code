@@ -10,7 +10,7 @@ FROM
 	pg_class AS C,pg_type b,pg_attribute AS A 
 WHERE
 	 A.attrelid = C.oid AND A.atttypid = b.oid AND A.attnum > 0
-	AND C.relname = 'ods_api_vacc_personinfo' --表名
+	AND C.relname = '' --表名
 ),tmp1 AS(
 SELECT 
 NAME||'  '||
@@ -99,10 +99,10 @@ WHEN upper(DATA_TYPE) like 'datetime%' THEN 'timestamp'
 ELSE DATA_TYPE END) ,',',CHAR(10)
 )SEPARATOR '')AS col
 FROM INFORMATION_SCHEMA.COLUMNS 
-WHERE TABLE_NAME = 'api_vacc_personinfo'    -- 表名
+WHERE TABLE_NAME = ''    -- 表名
 )b ON a.TABLE_NAME=b.TABLE_NAME , 
 (SELECT CONCAT('PRIMARY KEY(',GROUP_CONCAT(COLUMN_NAME),') NOT ENFORCED') AS PK 
-FROM INFORMATION_SCHEMA.COLUMNS WHERE COLUMN_KEY='PRI' AND TABLE_NAME = 'api_vacc_personinfo' -- 表名
+FROM INFORMATION_SCHEMA.COLUMNS WHERE COLUMN_KEY='PRI' AND TABLE_NAME = '' -- 表名
 )c ;
 
 
